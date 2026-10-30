@@ -8,6 +8,7 @@
 #   ego-record.sh check
 #   ego-record.sh start --name "<케이스 이름>" [--size 1440x900] [--mobile] [--cursor | --no-cursor] "<대상 URL>"
 #   ego-record.sh act <실행 폴더> [--say "<이 라운드에서 하려는 일>"] [-e '<js>' | < script.js]
+#   ego-record.sh mark <실행 폴더> <R번호> script|product|passed ["메모"]   (실패한 라운드 판정 고치기)
 #   ego-record.sh stop <실행 폴더>
 #   ego-record.sh abort <실행 폴더>      (영상을 만들지 않고 관찰자·TaskSpace 만 정리)
 set -u
@@ -142,10 +143,38 @@ cmd_act() {
   local n=$(( $(cat "$run/acts" 2>/dev/null || echo 0) + 1 )) rc
   echo "$n" > "$run/acts"
   at "$run" case "R$n" running --title "${say:-act 라운드 $n}"
-  { printf 'const RUN = %s;\n' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$run")"; cat "$SDIR/act-prelude.js"; printf '\n%s\n' "$code"; } | ego-browser nodejs
+  { printf 'const RUN = %s;\n' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$run")"; cat "$SDIR/act-prelude.js"; printf '\n%s\n' "$code"; } | ego-browser nodejs 2> "$run/act.err"
   rc=$?
-  if [ "$rc" -eq 0 ]; then at "$run" case "R$n" passed; else at "$run" case "R$n" failed "종료 코드 $rc"; fi
+  cat "$run/act.err" >&2
+  if [ "$rc" -eq 0 ]; then at "$run" case "R$n" passed
+  else
+    # 오류 첫 줄을 메모로 남긴다. 라운드 코드 자체의 잘못(낡은 ref·여러 개에 걸린 선택자·JS 오류)은
+    # 화면을 검증하지 못한 라운드라 실패가 아니라 건너뜀으로 둔다. 나머지는 실패로 두고 호출자가 mark 로 가린다.
+    local err; err=$(strip < "$run/act.err" | grep -m1 -E '[A-Za-z]*Error\b' || strip < "$run/act.err" | grep -m1 .)
+    err=$(printf '%s' "${err:-종료 코드 $rc}" | cut -c1-200)
+    if printf '%s' "$err" | grep -qE '(Stale|Unknown) ref|matched [2-9][0-9]* elements|matched [1-9][0-9]+ elements|^(SyntaxError|ReferenceError|TypeError|RangeError)\b'; then
+      at "$run" case "R$n" skipped "실측 스크립트 오류 — $err"
+    else at "$run" case "R$n" failed "$err"; fi
+  fi
   return "$rc"
+}
+
+# --- mark -------------------------------------------------------------------
+# 실패한 라운드를 확인한 뒤 판정을 고친다. script = 실측 스크립트 잘못(건너뜀), product = 화면 결함(실패).
+cmd_mark() {
+  local run="${1:?실행 폴더가 필요합니다}" id="${2:?라운드 번호(R3)가 필요합니다}" kind="${3:?script|product|passed 가 필요합니다}"; shift 3
+  [ -f "$run/config.json" ] || die "실행 폴더가 아니다: $run"
+  [[ "$id" =~ ^R[0-9]+$ ]] || die "라운드 번호는 R3 형식이다"
+  local memo="$*"
+  case "$kind" in
+    script)  at "$run" case "$id" skipped "실측 스크립트 오류${memo:+ — $memo}" ;;
+    product) at "$run" case "$id" failed "화면 결함${memo:+ — $memo}" ;;
+    passed)  at "$run" case "$id" passed ${memo:+"$memo"} ;;
+    *) die "판정은 script|product|passed 중 하나다" ;;
+  esac
+  # stop 뒤라면 실행의 성패를 다시 매긴다(실패 케이스가 남았는지로)
+  [ -f "$run/run.json" ] && at "$run" end "$(basename "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["video"])' "$run/run.json")")"
+  echo "$id → $kind"
 }
 
 # --- stop / abort -----------------------------------------------------------
@@ -239,6 +268,7 @@ case "$sub" in
   check) cmd_check ;;
   start) cmd_start "$@" ;;
   act)   cmd_act "$@" ;;
+  mark)  cmd_mark "$@" ;;
   stop)  cmd_stop "$@" ;;
   abort) cmd_abort "$@" ;;
   *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
