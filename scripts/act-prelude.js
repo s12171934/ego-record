@@ -31,6 +31,21 @@ const page = task.page("p1");
   wrap(Object.getPrototypeOf(page), "page", ["goto", "reload", "click", "dblclick", "hover", "fill", "press", "selectOption", "focus", "dragAndDrop", "setInputFiles", "evaluate", "waitForURL", "waitForSelector", "waitForLoadState", "waitForFunction", "acceptDialog", "dismissDialog", "close"]);
   wrap(Object.getPrototypeOf(page.mouse), "mouse", ["click", "move", "down", "up", "wheel"]);
   wrap(Object.getPrototypeOf(page.keyboard), "keyboard", ["down", "up", "press", "type", "insertText", "paste"]);
+  // ego 의 page.screenshot() 은 자체 화면 크기를 걸어, 그 뒤로 관찰자가 건 크기와 캡처마다 번갈아 페이지가 흔들린다
+  // (창 반짝임·클릭 좌표 어긋남·깨진 프레임) — 같은 모양의 CDP 캡처로 바꿔 낀다
+  {
+    const proto = Object.getPrototypeOf(page);
+    if (!proto.screenshot.__egoRecord) {
+      const os = await import("node:os");
+      const shot = async function (opts = {}) {
+        const r = await this.cdp("Page.captureScreenshot", { format: "png" });
+        const path = opts.path || `${os.tmpdir()}/ego-record-${Date.now()}.png`;
+        await fs.writeFile(path, Buffer.from(r.data, "base64"));
+        return path;
+      };
+      shot.__egoRecord = true; proto.screenshot = shot;
+    }
+  }
   // 고정 페이지 밖으로 나가는 호출 — 관찰자는 p1 만 찍으므로 stop 이 이 녹화를 [폐기] 로 판정한다
   wrap(Object.getPrototypeOf(task), "space", ["newPage", "adopt", "finish", "handOff"]);
 }
