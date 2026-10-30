@@ -44,7 +44,7 @@ git clone https://github.com/s12171934/ego-record.git ~/.claude/skills/ego-recor
 | `scripts/cursor.js` | 녹화용 커서 오버레이 |
 | `scripts/ego-timeline.py` | 동작 기록을 녹화 시작 기준 오프셋으로 펴는 타임라인 초안 도구 |
 
-환경 변수: `EGO_RECORD_FPS`(캡처 fps, 기본 5), `EGO_RECORD_MAX_SECONDS`(관찰자 상한, 기본 1800).
+환경 변수: `EGO_RECORD_FPS`(최대 fps, 기본 5), `EGO_RECORD_MAX_SECONDS`(관찰자 상한, 기본 1800).
 
 ## 공개 면
 

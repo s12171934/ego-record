@@ -9,7 +9,7 @@ ego lite 에는 `aside exec` 같은 자체 에이전트가 없다. **브라우�
 그래서 러너는 한 번에 돌지 않고 `start → act(여러 번) → stop` 으로 나뉜다. 에이전트는 act 라운드마다
 화면을 보고 다음 동작을 정하고, 그동안 백그라운드 관찰자가 고정 페이지를 계속 찍는다.
 
-- 화면을 찍지 않는다 — 관찰자가 고정 페이지 p1 에서 `Page.captureScreenshot` 으로 프레임을 받는다.
+- 화면을 찍지 않는다 — 관찰자가 고정 페이지 p1 에서 `Page.startScreencast` 로 프레임을 받는다.
 - 메뉴 클릭·`activate`·창 이동이 없어 사용자의 전면 앱이 바뀌지 않는다(실측: 0.5초 간격 측정 내내 불변).
 - ego-browser 의 일반 사용법(API·TaskSpace 규칙)은 `ego-browser skill` 출력이 원본이다. 이 문서는 녹화에 필요한 것만 적는다.
 
@@ -57,7 +57,7 @@ EOF
 - **`abort`** — 영상 없이 관찰자·TaskSpace·실행 폴더를 정리한다. 실패한 시작이나 버릴 녹화에 쓴다.
 - **`mark <실행 폴더> <R번호> script|product|passed ["메모"]`** — 실패한 라운드의 판정을 고친다(아래 「테스트 진행 기록」). stop 뒤에 불러도 실행의 성패를 다시 매긴다.
 
-출력은 `~/Movies/ego-record/<케이스 이름> <YYYYmmdd-HHMMSS>.mp4` 와 같은 이름의 `.timeline.txt` 다. 기본 5fps(`EGO_RECORD_FPS`).
+출력은 `~/Movies/ego-record/<케이스 이름> <YYYYmmdd-HHMMSS>.mp4` 와 같은 이름의 `.timeline.txt` 다. 기본 최대 5fps(`EGO_RECORD_FPS`) — 화면이 바뀔 때만 프레임이 쌓이고, 멈춘 구간은 마지막 프레임이 그 길이만큼 보인다.
 **저장 위치는 인자로 바꿀 수 없다** — 세션 스크래치패드로 빼면 세션이 정리될 때 영상이 같이 사라진다.
 동작 기록은 `~/Movies/ego-record/.runs/<실행 폴더>/` 에 남는다(`actions.jsonl`·`nav.jsonl`·`config.json`).
 
@@ -81,6 +81,7 @@ wait
 - **`page.screenshot()` 은 PNG 만 내고 `type` 옵션을 거부한다.** JPEG 는 `page.cdp("Page.captureScreenshot", {format: "jpeg"})` 로 받는다.
 - **ego 의 에이전트 커서는 캡처에 찍히지 않는다** — CDP 캡처·`screenshot()` 어느 쪽에도 없고 DOM 에도 없다. 녹화용 커서(`scripts/cursor.js`)는 `Page.addScriptToEvaluateOnNewDocument` 로 이동 뒤에도 다시 들어간다. 새 문서에서는 다음 마우스 이벤트(이동·클릭·스크롤)가 올 때까지 위치를 모른다 — 같은 출처 이동은 마지막 위치를 이어받고, 다른 사이트로 이동하면 다음 이벤트까지 숨는다.
 - **페이지가 스스로 넓은 `meta viewport` 를 주면 화면 크기보다 넓게 그려 축소해 보인다**(예: 데스크톱 UA 로 연 위키백과는 `width=1120` → 390 폭 화면에서 0.35배). 영상 크기는 지정한 값 그대로이고 커서도 같이 작아진다. start 출력의 「페이지 레이아웃 폭」이 화면 폭과 다르면 이 경우다.
+- **관찰자는 주기적인 `Page.captureScreenshot` 을 쓰지 않는다.** 화면 크기를 ego 창보다 작게 건 동안 그 캡처를 초당 몇 번씩 부르면 캡처마다 페이지를 다시 그려 창의 나머지 영역이 번쩍인다(흰 페이지에서 특히 심하다). 그래서 `Page.startScreencast` 로 화면이 바뀐 프레임만 받고 `page.events()` 로 꺼내 받을 때마다 `Page.screencastFrameAck` 한다. 케이스마다 관찰자 프로세스가 따로면 동시 녹화에서도 각자 프레임이 온다(실측: 두 프로세스 동시 4초에 각 20장). 한 프로세스에서 두 페이지에 screencast 를 걸면 둘 다 0장이었다.
 - **ego 의 `click` 은 요소 중앙에서 `isTrusted` 이벤트를 낸다.** 모바일 흉내에서도 pointer·mouse·click 이 같은 좌표로 온다.
 - **같은 TaskSpace 의 같은 페이지를 두 프로세스(관찰자·act)가 동시에 써도 충돌하지 않는다.**
 - **ego 에는 Aside 의 세션 로그 같은 동작 기록이 없다.** 타임라인은 act 머리말이 Page·mouse·keyboard 프로토타입을 감싸 남긴 `actions.jsonl` 과 관찰자의 1초 간격 URL 기록 `nav.jsonl` 로 만든다. `page.cdp()` 직접 호출과 act 를 거치지 않은 `ego-browser nodejs` 호출은 남지 않는다.

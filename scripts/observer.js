@@ -19,9 +19,16 @@ if (cfg.cursor) {
 const vp = [cfg.width, cfg.height, 2, await page.evaluate(() => innerWidth)];
 await fs.writeFile(RUN + "/ready", JSON.stringify({ t: Date.now(), viewport: vp }));
 
+// 프레임은 Page.startScreencast 로 받는다. 주기적인 Page.captureScreenshot 은 캡처마다 페이지를 다시 그리게 해서,
+// 화면 크기를 창보다 작게 건 동안 창의 나머지 영역이 번쩍인다(흰 페이지에서 특히 심하다).
+// screencast 는 화면이 바뀔 때만 프레임을 보내므로, 멈춘 구간은 마지막 프레임이 길게 보인다(인코딩이 파일명 간격을 길이로 쓴다).
 const period = Math.round(1000 / cfg.fps);
 const end = Date.now() + cfg.maxSeconds * 1000;
-let n = 0, err = 0, lastUrl = "", lastNav = 0;
+let n = 0, err = 0, lastUrl = "", lastNav = 0, lastWrite = 0, last = null, pending = null;
+const fail = (e) => { err++; if (err < 4) console.log("capture error", String(e && e.message).slice(0, 200)); };
+const save = async (t, b) => { await fs.writeFile(`${RUN}/frames/${t}.jpg`, b); n++; lastWrite = t; last = b; };
+await page.events();
+await page.cdp("Page.startScreencast", { format: "jpeg", quality: 70, maxWidth: cfg.width * 2, maxHeight: cfg.height * 2 });
 while (Date.now() < end) {
   try { await fs.stat(RUN + "/STOP"); break; } catch {}
   const t = Date.now();
@@ -34,11 +41,19 @@ while (Date.now() < end) {
     } catch {}
   }
   try {
-    const shot = page.cdp("Page.captureScreenshot", { format: "jpeg", quality: 70 }).then((r) => Buffer.from(r.data, "base64"));
-    const b = await Promise.race([shot, new Promise((r) => setTimeout(() => r(null), 3000))]);
-    if (b) { await fs.writeFile(`${RUN}/frames/${t}.jpg`, b); n++; } else err++;
-  } catch (e) { err++; if (err < 4) console.log("capture error", String(e.message).slice(0, 200)); }
-  const w = period - (Date.now() - t);
-  if (w > 0) await new Promise((r) => setTimeout(r, w));
+    for (const e of await page.events()) {
+      if (e.method === "Page.screencastFrame") {
+        // 받은 프레임마다 ack 해야 다음 프레임이 온다. fps 보다 촘촘한 프레임은 가장 최근 것만 남긴다
+        page.cdp("Page.screencastFrameAck", { sessionId: e.params.sessionId }).catch(fail);
+        pending = { t: Math.round(e.params.metadata.timestamp * 1000) || Date.now(), data: e.params.data };
+      }
+    }
+    if (pending && Date.now() - lastWrite >= period) { await save(Math.max(pending.t, lastWrite + 1), Buffer.from(pending.data, "base64")); pending = null; }
+  } catch (e) { fail(e); }
+  await new Promise((r) => setTimeout(r, 50));
 }
+await page.cdp("Page.stopScreencast").catch(() => {});
+// 마지막 화면이 끝까지 보이도록 — 남은 프레임을 쓰고, 멈춘 화면이면 마지막 프레임을 멈춘 시각으로 한 장 더 둔다
+if (pending) await save(Math.max(pending.t, lastWrite + 1), Buffer.from(pending.data, "base64"));
+if (last && Date.now() - lastWrite > period) await save(Date.now(), last);
 await fs.writeFile(RUN + "/observer.json", JSON.stringify({ frames: n, errors: err, viewport: vp, timedOut: Date.now() >= end }));
