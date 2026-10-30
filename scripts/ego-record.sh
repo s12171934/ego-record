@@ -20,6 +20,17 @@ MAX_SECONDS="${EGO_RECORD_MAX_SECONDS:-1800}"  # 관찰자 안전 상한. stop �
 die() { echo "$*" >&2; exit 1; }
 strip() { sed $'s/\x1b\\[[0-9;]*m//g'; }
 
+# --- 테스트 진행 기록 ---------------------------------------------------------
+# 녹화 실측도 테스트로 친다 — agent dashboard 의 atest 진행 파일에 녹화 하나를 실행 하나로 남긴다.
+# 케이스는 준비·act 라운드(R1, R2 …, 제목은 --say)·인코딩·고정 페이지 판정. 실행 키는 실행 폴더에서 나온다.
+# atest 는 $ATEST·PATH, 없으면 이 스킬이 든 볼트의 agent-dashboard 에서 찾는다. 없거나 실패해도 녹화는 계속한다.
+ATEST="${ATEST:-$(command -v atest 2>/dev/null)}"
+[ -x "$ATEST" ] || ATEST="$SDIR/../../../../40_Tools/agent-dashboard/bin/atest"
+at() {  # <실행 폴더> <atest 명령 …>
+  local key="ego-$(basename "$1" | tr '.' '-')"; shift
+  [ -x "$ATEST" ] && "$ATEST" "$@" --key "$key" >/dev/null 2>&1; return 0
+}
+
 # --- check ------------------------------------------------------------------
 cmd_check() {
   local fail=0
@@ -73,6 +84,8 @@ cmd_start() {
   mkdir -p "$OUTDIR/.runs"
   local run; run=$(mktemp -d "$OUTDIR/.runs/$stamp.XXXX") || die "실행 폴더를 만들지 못했다"
   mkdir -p "$run/frames"
+  at "$run" start --kind ego --label "녹화 실측 · $name" "준비=TaskSpace·고정 페이지 p1·관찰자 ($url)"
+  at "$run" case "준비" running
 
   # 0) TaskSpace 와 고정 페이지 p1. 케이스마다 space 가 따로라 동시에 여러 건을 돌려도 섞이지 않는다.
   ego-browser nodejs > "$run/start.log" 2>&1 <<EOF
@@ -83,7 +96,7 @@ catch (e) { console.log("GOTO_WARN " + String(e.message).slice(0, 160)); }
 console.log("SPACE:" + task.spaceId);
 EOF
   local space; space=$(strip < "$run/start.log" | sed -n 's/^SPACE://p' | head -1)
-  [ -n "$space" ] || { cat "$run/start.log" >&2; rm -rf "$run"; die "TaskSpace 를 열지 못했다"; }
+  [ -n "$space" ] || { cat "$run/start.log" >&2; at "$run" case "준비" failed "TaskSpace 를 열지 못했다"; at "$run" end failed; rm -rf "$run"; die "TaskSpace 를 열지 못했다"; }
   python3 - "$run/config.json" "$name" "$url" "$space" "$w" "$h" "$mobile" "$cursor" "$FPS" "$MAX_SECONDS" "$SDIR" <<'PY'
 import json, sys
 out, name, url, space, w, h, mobile, cursor, fps, mx, sdir = sys.argv[1:]
@@ -100,10 +113,12 @@ PY
   for _ in $(seq 1 60); do [ -s "$run/ready" ] && break; kill -0 "$(cat "$run/observer.pid")" 2>/dev/null || break; sleep 0.5; done
   if [ ! -s "$run/ready" ]; then
     tail -5 "$run/observer.log" >&2
+    at "$run" case "준비" failed "관찰자가 준비되지 않았다"
     cmd_abort "$run" >/dev/null 2>&1
     die "관찰자가 준비되지 않았다"
   fi
   grep -h GOTO_WARN "$run/start.log" | strip
+  at "$run" case "준비" passed "space $space · ${w}×${h}"
   echo "녹화 시작: $name"
   echo "   화면 $(python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["viewport"]; print("%d×%d (페이지 레이아웃 폭 %d)" % (v[0], v[1], v[3]))' "$run/ready") · space $space · 고정 페이지 p1"
   echo "RUN=$run"
@@ -124,7 +139,13 @@ cmd_act() {
   done
   [ -z "$code" ] && code=$(cat)
   [ -n "$say" ] && python3 -c 'import json,sys,time; open(sys.argv[1],"a").write(json.dumps({"t": int(time.time()*1000), "kind": "say", "text": sys.argv[2]}, ensure_ascii=False) + "\n")' "$run/actions.jsonl" "$say"
+  local n=$(( $(cat "$run/acts" 2>/dev/null || echo 0) + 1 )) rc
+  echo "$n" > "$run/acts"
+  at "$run" case "R$n" running --title "${say:-act 라운드 $n}"
   { printf 'const RUN = %s;\n' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$run")"; cat "$SDIR/act-prelude.js"; printf '\n%s\n' "$code"; } | ego-browser nodejs
+  rc=$?
+  if [ "$rc" -eq 0 ]; then at "$run" case "R$n" passed; else at "$run" case "R$n" failed "종료 코드 $rc"; fi
+  return "$rc"
 }
 
 # --- stop / abort -----------------------------------------------------------
@@ -142,7 +163,8 @@ finish_space() {  # <run>
 }
 cmd_abort() {
   local run="${1:?실행 폴더가 필요합니다}"
-  stop_observer "$run"; finish_space "$run"; rm -rf "$run"
+  stop_observer "$run"; finish_space "$run"
+  at "$run" end failed "중단 — 영상을 만들지 않았다"; rm -rf "$run"
   echo "중단: 영상을 만들지 않았다"
 }
 cmd_stop() {
@@ -152,7 +174,8 @@ cmd_stop() {
   finish_space "$run"
   local first count name
   first=$(ls "$run/frames" 2>/dev/null | sort -n | head -1)
-  [ -n "$first" ] || { tail -5 "$run/observer.log"; die "프레임이 하나도 없다 — $run/observer.log 를 본다"; }
+  at "$run" case "인코딩" running --title "mp4 묶기"
+  [ -n "$first" ] || { tail -5 "$run/observer.log"; at "$run" case "인코딩" failed "프레임 없음"; at "$run" end failed; die "프레임이 하나도 없다 — $run/observer.log 를 본다"; }
   count=$(ls "$run/frames" | wc -l | tr -d ' ')
   name=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "$run/config.json")
 
@@ -176,7 +199,7 @@ PY
   ffmpeg -v error -f concat -safe 0 -i "$run/concat.txt" \
     -vf "fps=$FPS,scale=trunc(iw/4)*2:trunc(ih/4)*2,format=yuv420p" \
     -c:v h264_videotoolbox -b:v 2M -movflags +faststart -y "$mp4" \
-    || die "인코딩 실패 — 프레임은 $run/frames 에 남겨 둔다"
+    || { at "$run" case "인코딩" failed "인코딩 실패"; at "$run" end failed; false; } || die "인코딩 실패 — 프레임은 $run/frames 에 남겨 둔다"
 
   python3 - "$run" "$mp4" "${first%.jpg}" "$count" <<'PY'
 import json, os, sys
@@ -188,6 +211,7 @@ PY
   python3 "$SDIR/ego-timeline.py" --run "$run" --video "$mp4" > "${mp4%.mp4}.timeline.txt"
   rm -rf "$run/frames" "$run/concat.txt" "$run/STOP"
 
+  at "$run" case "인코딩" passed "프레임 $count 장"
   echo "영상: $mp4"
   echo "영상 URL: $(python3 -c 'import sys,urllib.parse; print("file://" + urllib.parse.quote(sys.argv[1]))' "$mp4")"
   echo "녹화 시작: $(date -r "$epoch" '+%Y-%m-%d %H:%M:%S') (epoch $epoch)"
@@ -199,11 +223,14 @@ PY
   viol=$(grep '"kind":"space"' "$run/actions.jsonl" 2>/dev/null | grep -o '"name":"[a-zA-Z]*"' | sort -u | tr '\n' ' ')
   if [ -n "$viol" ]; then
     echo "[폐기] 작업이 고정 페이지 p1 밖을 썼다: $viol— 그 구간은 영상에 없다"
+    at "$run" case "고정 페이지 판정" failed --title "p1 밖 호출 확인" "[폐기] $viol"
   else
     echo "고정 페이지: 지켜짐"
+    at "$run" case "고정 페이지 판정" passed --title "p1 밖 호출 확인"
   fi
   python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("timedOut") else 1)' "$run/run.json" \
     && echo "[경고] 관찰자가 상한(${MAX_SECONDS}초)에 걸려 먼저 멈췄다 — 영상 뒷부분이 없다"
+  at "$run" end "$(basename "$mp4")"
   return 0
 }
 
