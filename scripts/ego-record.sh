@@ -31,6 +31,16 @@ at() {  # <실행 폴더> <atest 명령 …>
   local key="ego-$(basename "$1" | tr '.' '-')"; shift
   [ -x "$ATEST" ] && "$ATEST" "$@" --key "$key" >/dev/null 2>&1; return 0
 }
+# 남긴 녹화는 agent dashboard 의 「녹화 영상」 공개 목록(media.json)에 올린다 — tailnet 기기·iPhone 에서 보도록.
+# amedia 는 $AMEDIA·PATH, 없으면 이 스킬이 든 볼트의 agent-dashboard 에서 찾는다. ADASH_MEDIA_AUTO=0 이면 올리지 않는다.
+AMEDIA="${AMEDIA:-$(command -v amedia 2>/dev/null)}"
+[ -x "$AMEDIA" ] || AMEDIA="$SDIR/../../../../40_Tools/agent-dashboard/bin/amedia"
+publish() {  # <mp4>
+  [ "${ADASH_MEDIA_AUTO:-1}" = 0 ] && { echo "대시보드 공개: 끔 (ADASH_MEDIA_AUTO=0)"; return 0; }
+  [ -x "$AMEDIA" ] || { echo "대시보드 공개: amedia 를 찾지 못해 건너뜀"; return 0; }
+  "$AMEDIA" add "$1" >/dev/null 2>&1 && echo "대시보드 공개: 「녹화 영상」 목록에 올림" || echo "대시보드 공개: 실패 — $AMEDIA add 로 다시 올린다"
+  return 0
+}
 
 # --- check ------------------------------------------------------------------
 cmd_check() {
@@ -256,6 +266,7 @@ PY
   else
     echo "고정 페이지: 지켜짐"
     at "$run" case "고정 페이지 판정" passed --title "p1 밖 호출 확인"
+    publish "$mp4"
   fi
   python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("timedOut") else 1)' "$run/run.json" \
     && echo "[경고] 관찰자가 상한(${MAX_SECONDS}초)에 걸려 먼저 멈췄다 — 영상 뒷부분이 없다"
